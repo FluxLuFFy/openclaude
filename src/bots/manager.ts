@@ -43,6 +43,8 @@ export class BotGateway {
   /** Register a message handler that receives all bot messages */
   onMessage(handler: (msg: BotMessage) => Promise<void>): void {
     this.messageHandler = handler;
+    // Wire immediately so dynamic adapters also route through it
+    this.messageBus.subscribeAll(handler);
   }
 
   /** Initialize and start all configured adapters */
