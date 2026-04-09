@@ -563,15 +563,30 @@ export const WebSearchTool = buildTool({
     //   - "auto": tries each provider, falls through on failure
     //   - specific mode: runs one provider, throws on failure
     if (shouldUseAdapterProvider()) {
-      const providerOutput = await runSearch(
-        {
-          query: input.query,
-          allowed_domains: input.allowed_domains,
-          blocked_domains: input.blocked_domains,
-        },
-        context.abortController.signal,
-      )
-      return { data: formatProviderOutput(providerOutput, input.query) }
+      const mode = getProviderMode()
+      const isExplicitAdapter = mode !== 'auto'
+      try {
+        const providerOutput = await runSearch(
+          {
+            query: input.query,
+            allowed_domains: input.allowed_domains,
+            blocked_domains: input.blocked_domains,
+          },
+          context.abortController.signal,
+        )
+        // Explicit adapter: return even 0 hits (no silent native fallback)
+        if (isExplicitAdapter || providerOutput.hits.length > 0) {
+          return { data: formatProviderOutput(providerOutput, input.query) }
+        }
+        // Auto mode with 0 hits: fall through to native
+      } catch (err) {
+        // Explicit adapter: throw the real error (no silent native fallback)
+        if (isExplicitAdapter) throw err
+        // Auto mode: log and fall through to native
+        console.error(
+          `[web-search] Adapter failed, falling through to native: ${err}`,
+        )
+      }
     }
 
     // --- Codex / OpenAI Responses path ---
