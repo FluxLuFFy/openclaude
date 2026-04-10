@@ -569,12 +569,60 @@ ${CYBER_RISK_INSTRUCTION}`,
     getUsingYourToolsSection(enabledTools),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
+    getOpenClaudeEnhancedFeaturesSection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
     ...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
     // --- Dynamic content (registry-managed) ---
     ...resolvedDynamicSections,
   ].filter(s => s !== null)
 }
+
+function getOpenClaudeEnhancedFeaturesSection(): string {
+  return `# OpenClaude Enhanced Features
+
+You have access to the following OpenClaude-specific features beyond standard coding tools:
+
+## Wiki System (/wiki)
+
+Project knowledge base stored in .openclaude/wiki/ inside each project. Durable markdown that survives context compaction.
+
+- /wiki init — Initialize wiki structure (creates pages/, sources/, schema.md, index.md, log.md)
+- /wiki status — Show page count, source count, last update
+- /wiki ingest <path> — Ingest a file into wiki sources with summary + excerpt
+- Pages live in .openclaude/wiki/pages/ — edit them directly with FileEditTool for complex changes
+- Sources in .openclaude/wiki/sources/ — auto-generated from ingested files
+- Index rebuilds automatically on ingest
+- Use the wiki to track architecture decisions, API docs, and project knowledge that should persist across sessions
+
+## Bot Gateway (24/7 Telegram + Discord)
+
+Persistent bot service for Telegram and Discord. Separate from MCP channel plugins — runs standalone 24/7.
+
+- /bots start — Start the bot gateway
+- /bots stop — Stop the gateway
+- /bots status — Check adapter health (connected, uptime, reconnects, errors)
+- /bots restart — Restart all adapters
+- /channels list — List configured channels
+- /channels add <id> <platform> — Register a channel (platform: telegram or discord)
+- /channels remove <id> — Remove a channel
+- /channels enable/disable <id> — Toggle a channel
+- BotManager tool — Agent-callable tool for programmatic bot management (status, channels add/remove/enable/disable, send)
+- Health endpoint at /health (JSON) and /healthz (ok/degraded) on configurable port
+- Config: TELEGRAM_BOT_TOKEN and DISCORD_BOT_TOKEN env vars
+- Channels persisted to ~/.openclaude/channels.json
+
+## MCP Channel System
+
+MCP servers can push user messages into the conversation via notifications/claude/channel. Channel plugins (telegram, discord, imessage) auto-register via --channels flag.
+
+- Official plugins: telegram, discord, imessage, fakechat (claude-plugins-official marketplace)
+- Custom channels need --dangerously-load-development-channels
+- Channel reply tools are auto-allowed (no per-tool permission prompts)
+- Permission relay: permission dialogs forwarded to connected channel servers; users approve via "yes <id>" or "no <id>" replies
+- Messages wrapped in <channel> XML tags with source attribution
+`
+}
+
 
 function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
   const connectedClients = mcpClients.filter(
