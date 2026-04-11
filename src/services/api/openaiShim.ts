@@ -1316,12 +1316,12 @@ class OpenAIShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
-    // For Gemini: fire a background probe to check if this model supports
-    // `thinking: true`.  The probe runs async and caches the result so
-    // subsequent requests can use it.  First request skips thinking (safe
-    // default); requests after the probe completes get thinking enabled
-    // if the model supports it.
-    if (isGeminiMode() && !thinkingSupportCache.has(request.resolvedModel)) {
+    // Fire a background probe to check if this model supports `thinking: true`.
+    // Works for any OpenAI-compatible provider — Gemini, DeepSeek, Mistral, etc.
+    // The probe runs async and caches the result so subsequent requests can use it.
+    // First request skips thinking (safe default); requests after the probe
+    // completes get thinking enabled if the model supports it.
+    if (!thinkingSupportCache.has(request.resolvedModel)) {
       const apiKey = this.providerOverride?.apiKey ?? process.env.OPENAI_API_KEY ?? ''
       // Fire-and-forget — don't await, don't slow down the first request
       probeThinkingSupport(request.resolvedModel, request.baseUrl, apiKey).catch(() => {})
@@ -1378,11 +1378,11 @@ class OpenAIShimMessages {
     if (params.top_p !== undefined) body.top_p = params.top_p
 
     // Enable thinking/reasoning for providers that support it.
-    // Gemini: probed at runtime — first request fires a probe, subsequent
-    // requests use the cached result.  Models that reject `thinking: true`
-    // (e.g. Gemini 1.5) are cached as unsupported and skipped.
-    // OpenAI: uses `reasoning_effort` from model alias config.
-    if (isGeminiMode() && shouldSendThinking(request.resolvedModel)) {
+    // Runtime probe: first request to any provider fires a background probe
+    // with `thinking: true`.  If the API accepts it, subsequent requests
+    // include thinking.  If rejected (400), it's skipped for that model.
+    // OpenAI: also supports `reasoning_effort` from model alias config.
+    if (shouldSendThinking(request.resolvedModel)) {
       body.thinking = true
     } else if (request.reasoning?.effort) {
       body.reasoning_effort = request.reasoning.effort
@@ -1774,4 +1774,10 @@ export function createOpenAIShimClient(options: {
     beta,
     messages: beta.messages,
   }
+}
+
+/** Reset thinking support cache — exported for testing. */
+export function _resetThinkingSupportCache(): void {
+  thinkingSupportCache.clear()
+  thinkingProbeInFlight.clear()
 }

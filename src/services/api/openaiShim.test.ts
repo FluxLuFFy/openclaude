@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { createOpenAIShimClient } from './openaiShim.ts'
+import { createOpenAIShimClient, _resetThinkingSupportCache } from './openaiShim.ts'
 
 type FetchType = typeof globalThis.fetch
 
@@ -72,6 +72,7 @@ function makeStreamChunks(chunks: unknown[]): string[] {
 }
 
 beforeEach(() => {
+  _resetThinkingSupportCache()
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   process.env.OPENAI_API_KEY = 'test-key'
   delete process.env.OPENAI_MODEL
@@ -2889,7 +2890,7 @@ test('strips extra_content and thought_signature from tool_calls for non-Gemini 
   expect(requestBody!).toHaveProperty('store', false)
 })
 
-test('Gemini: sends thinking=true in request body', async () => {
+test('Gemini: sends thinking=true after probe confirms support', async () => {
   let requestBody: Record<string, unknown> | undefined
 
   globalThis.fetch = (async (_input, init) => {
@@ -2910,22 +2911,47 @@ test('Gemini: sends thinking=true in request body', async () => {
 
   const client = createOpenAIShimClient({}) as OpenAIShimClient
 
+  // First request: probe fires async, main request goes without thinking
   await client.beta.messages.create({
     model: 'gemini-2.5-flash',
     messages: [{ role: 'user', content: 'hello' }],
     max_tokens: 64,
     stream: false,
   })
+  expect(requestBody!).not.toHaveProperty('thinking')
 
-  expect(requestBody).toBeDefined()
+  // Wait for probe to complete (mock returns 200 → thinking supported)
+  await new Promise(r => setTimeout(r, 50))
+
+  // Second request: probe confirmed support, thinking is included
+  requestBody = undefined
+  await client.beta.messages.create({
+    model: 'gemini-2.5-flash',
+    messages: [{ role: 'user', content: 'hello again' }],
+    max_tokens: 64,
+    stream: false,
+  })
   expect(requestBody!).toHaveProperty('thinking', true)
 })
 
-test('non-Gemini: does not send thinking=true', async () => {
-  let requestBody: Record<string, unknown> | undefined
+test('skips thinking=true when provider rejects it (400 probe)', async () => {
+  let mainRequestBody: Record<string, unknown> | undefined
+  let probeCount = 0
 
   globalThis.fetch = (async (_input, init) => {
-    requestBody = JSON.parse(String(init?.body))
+    const body = JSON.parse(String(init?.body))
+    // Detect probe requests: max_tokens=1 and thinking=true
+    if (body.thinking === true && body.max_tokens === 1) {
+      probeCount++
+      return new Response(
+        JSON.stringify({
+          error: { message: 'Unknown parameter: thinking', code: 400 },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    // Main request
+    mainRequestBody = body
     return new Response(
       JSON.stringify({
         id: 'chatcmpl-1',
@@ -2942,6 +2968,7 @@ test('non-Gemini: does not send thinking=true', async () => {
 
   const client = createOpenAIShimClient({}) as OpenAIShimClient
 
+  // First request: probe fires async, main request goes without thinking (cache empty)
   await client.beta.messages.create({
     model: 'gpt-4o',
     messages: [{ role: 'user', content: 'hello' }],
@@ -2949,6 +2976,25 @@ test('non-Gemini: does not send thinking=true', async () => {
     stream: false,
   })
 
-  expect(requestBody).toBeDefined()
-  expect(requestBody!).not.toHaveProperty('thinking')
+  // Main request should NOT have thinking (probe hadn't completed yet)
+  expect(mainRequestBody!).not.toHaveProperty('thinking')
+
+  // Wait for probe to complete and populate cache
+  await new Promise(r => setTimeout(r, 50))
+  expect(probeCount).toBe(1)
+
+  // Reset for second request
+  mainRequestBody = undefined
+
+  // Second request: cache says unsupported, no thinking, no new probe
+  await client.beta.messages.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'hello again' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  // No additional probe (cached as unsupported)
+  expect(probeCount).toBe(1)
+  expect(mainRequestBody!).not.toHaveProperty('thinking')
 })
