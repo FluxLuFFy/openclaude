@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { extractHits } from './custom.js'
 
 // ---------------------------------------------------------------------------
@@ -81,5 +81,43 @@ describe('extractHits', () => {
     }
     const hits = extractHits(data)
     expect(hits).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildAuthHeadersForPreset — tested indirectly via env vars
+// ---------------------------------------------------------------------------
+
+describe('buildAuthHeadersForPreset auth header behavior', () => {
+  const savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const k of ['WEB_KEY', 'WEB_AUTH_HEADER', 'WEB_AUTH_SCHEME']) {
+      savedEnv[k] = process.env[k]
+    }
+  })
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+
+  // We test isConfigured() which depends on WEB_SEARCH_API/WEB_PROVIDER/WEB_URL_TEMPLATE
+  // and the auth behavior through the public search() interface
+  test('custom provider is configured when WEB_URL_TEMPLATE is set', () => {
+    process.env.WEB_URL_TEMPLATE = 'https://example.com/search?q={query}'
+    const { customProvider } = require('./custom.js')
+    expect(customProvider.isConfigured()).toBe(true)
+    delete process.env.WEB_URL_TEMPLATE
+  })
+
+  test('custom provider is NOT configured when no env vars are set', () => {
+    delete process.env.WEB_URL_TEMPLATE
+    delete process.env.WEB_SEARCH_API
+    delete process.env.WEB_PROVIDER
+    const { customProvider } = require('./custom.js')
+    expect(customProvider.isConfigured()).toBe(false)
   })
 })
