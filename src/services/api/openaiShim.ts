@@ -271,6 +271,93 @@ function isMistralMode(): boolean {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Thinking support probe — cache per-model to avoid repeated 400s
+// ---------------------------------------------------------------------------
+
+const thinkingSupportCache = new Map<string, boolean>()
+const thinkingProbeInFlight = new Map<string, Promise<boolean>>()
+
+/**
+ * Probe whether a model supports `thinking: true` by sending a minimal
+ * request.  Result is cached per model for the process lifetime.
+ *
+ * Returns `true` if the model accepts thinking, `false` otherwise.
+ * On network/timeout errors, defaults to `false` (don't send thinking).
+ */
+async function probeThinkingSupport(
+  model: string,
+  baseUrl: string,
+  apiKey: string,
+): Promise<boolean> {
+  // Check cache first
+  const cached = thinkingSupportCache.get(model)
+  if (cached !== undefined) return cached
+
+  // Deduplicate concurrent probes for the same model
+  const existing = thinkingProbeInFlight.get(model)
+  if (existing) return existing
+
+  const probe = (async () => {
+    try {
+      const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+          stream: false,
+          thinking: true,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      })
+
+      if (res.ok) {
+        thinkingSupportCache.set(model, true)
+        return true
+      }
+
+      // Read error to check if it's specifically about thinking
+      const body = await res.text().catch(() => '')
+      const unsupported =
+        body.includes('thinking') ||
+        body.includes('unknown parameter') ||
+        body.includes('Unknown name') ||
+        body.includes('INVALID_ARGUMENT')
+
+      if (res.status === 400 && unsupported) {
+        thinkingSupportCache.set(model, false)
+        return false
+      }
+
+      // Other errors (auth, rate limit, etc.) — don't cache, default to false
+      return false
+    } catch {
+      // Network error or timeout — default to false
+      return false
+    } finally {
+      thinkingProbeInFlight.delete(model)
+    }
+  })()
+
+  thinkingProbeInFlight.set(model, probe)
+  return probe
+}
+
+/**
+ * Returns true if we should send `thinking: true` for this model.
+ * Uses cached probe result if available, otherwise kicks off an async
+ * probe and returns false until it completes.
+ */
+function shouldSendThinking(model: string): boolean {
+  return thinkingSupportCache.get(model) === true
+}
+
 /**
  * Returns true if the current provider does NOT support the OpenAI-only
  * `store` parameter.  Gemini and Mistral both reject it with 400.
@@ -1229,6 +1316,17 @@ class OpenAIShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
+    // For Gemini: fire a background probe to check if this model supports
+    // `thinking: true`.  The probe runs async and caches the result so
+    // subsequent requests can use it.  First request skips thinking (safe
+    // default); requests after the probe completes get thinking enabled
+    // if the model supports it.
+    if (isGeminiMode() && !thinkingSupportCache.has(request.resolvedModel)) {
+      const apiKey = this.providerOverride?.apiKey ?? process.env.OPENAI_API_KEY ?? ''
+      // Fire-and-forget — don't await, don't slow down the first request
+      probeThinkingSupport(request.resolvedModel, request.baseUrl, apiKey).catch(() => {})
+    }
+
     const openaiMessages = stripProviderSpecificFields(convertMessages(
       params.messages as Array<{
         role: string
@@ -1280,9 +1378,11 @@ class OpenAIShimMessages {
     if (params.top_p !== undefined) body.top_p = params.top_p
 
     // Enable thinking/reasoning for providers that support it.
-    // Gemini 2.5+ accepts `thinking: true` to enable extended thinking.
-    // OpenAI reasoning models (o1, o3, etc.) use `reasoning_effort`.
-    if (isGeminiMode()) {
+    // Gemini: probed at runtime — first request fires a probe, subsequent
+    // requests use the cached result.  Models that reject `thinking: true`
+    // (e.g. Gemini 1.5) are cached as unsupported and skipped.
+    // OpenAI: uses `reasoning_effort` from model alias config.
+    if (isGeminiMode() && shouldSendThinking(request.resolvedModel)) {
       body.thinking = true
     } else if (request.reasoning?.effort) {
       body.reasoning_effort = request.reasoning.effort
