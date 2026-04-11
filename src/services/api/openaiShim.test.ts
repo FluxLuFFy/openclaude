@@ -436,10 +436,14 @@ test('preserves Gemini tool call extra_content in follow-up requests', async () 
     )
   }) as FetchType
 
+  // Enable Gemini mode so extra_content.google.thought_signature is preserved
+  process.env.OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
+  process.env.OPENAI_API_KEY = 'fake-gemini-key'
+
   const client = createOpenAIShimClient({}) as OpenAIShimClient
 
   await client.beta.messages.create({
-    model: 'google/gemini-3.1-pro-preview',
+    model: 'gemini-2.5-flash',
     system: 'test system',
     messages: [
       { role: 'user', content: 'Use Bash' },
@@ -2575,4 +2579,312 @@ test('streaming: strips leaked reasoning preamble when split across multiple con
   }
 
   expect(textDeltas).toEqual(['Hey! How can I help you today?'])
+})
+
+test('omits store field for Gemini requests (fixes 400 Unknown name store)', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gemini-2.5-flash',
+        choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  process.env.OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
+  process.env.OPENAI_API_KEY = 'fake-gemini-key'
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'gemini-2.5-flash',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(requestBody).toBeDefined()
+  expect(requestBody!).not.toHaveProperty('store')
+})
+
+test('omits store field for Mistral requests (fixes 400 Unknown name store)', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'mistral-large-latest',
+        choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  process.env.OPENAI_BASE_URL = 'https://api.mistral.ai/v1'
+  process.env.OPENAI_API_KEY = 'fake-mistral-key'
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'mistral-large-latest',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(requestBody).toBeDefined()
+  expect(requestBody!).not.toHaveProperty('store')
+})
+
+test('includes store field for standard OpenAI requests', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gpt-4o',
+        choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_API_KEY = 'sk-fake-key'
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(requestBody).toBeDefined()
+  expect(requestBody!).toHaveProperty('store', false)
+})
+
+test('Gemini: thought_signature appears as top-level field on tool_calls', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gemini-2.5-flash',
+        choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  process.env.OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
+  process.env.OPENAI_API_KEY = 'fake-gemini-key'
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'gemini-2.5-flash',
+    system: 'test system',
+    messages: [
+      { role: 'user', content: 'Use Bash' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_gemini_1',
+            name: 'Bash',
+            input: { command: 'pwd' },
+            extra_content: {
+              google: { thought_signature: 'sig-gemini-456' },
+            },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_gemini_1', content: '/home/user' },
+        ],
+      },
+    ],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  const assistantWithToolCall = (requestBody?.messages as Array<Record<string, unknown>>).find(
+    message => Array.isArray(message.tool_calls),
+  ) as { tool_calls?: Array<Record<string, unknown>> } | undefined
+
+  expect(assistantWithToolCall?.tool_calls?.[0]).toMatchObject({
+    id: 'call_gemini_1',
+    type: 'function',
+    function: {
+      name: 'Bash',
+      arguments: JSON.stringify({ command: 'pwd' }),
+    },
+    // Top-level thought_signature for Gemini endpoint
+    thought_signature: 'sig-gemini-456',
+    // Also preserved in extra_content for backward compat
+    extra_content: {
+      google: {
+        thought_signature: 'sig-gemini-456',
+      },
+    },
+  })
+
+  // Verify store is NOT present for Gemini
+  expect(requestBody!).not.toHaveProperty('store')
+})
+
+test('Gemini: thought_signature uses sentinel when no previous signature exists', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'gemini-2.5-flash',
+        choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  process.env.OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
+  process.env.OPENAI_API_KEY = 'fake-gemini-key'
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  // No extra_content or signature — the sentinel should be used
+  await client.beta.messages.create({
+    model: 'gemini-2.5-flash',
+    system: 'test system',
+    messages: [
+      { role: 'user', content: 'Use Bash' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_no_sig',
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_no_sig', content: 'file.txt' },
+        ],
+      },
+    ],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  const assistantWithToolCall = (requestBody?.messages as Array<Record<string, unknown>>).find(
+    message => Array.isArray(message.tool_calls),
+  ) as { tool_calls?: Array<Record<string, unknown>> } | undefined
+
+  const toolCall = assistantWithToolCall?.tool_calls?.[0]
+  // Both top-level and extra_content should have the sentinel
+  expect(toolCall).toHaveProperty('thought_signature', 'skip_thought_signature_validator')
+  expect(toolCall).toHaveProperty(
+    'extra_content.google.thought_signature',
+    'skip_thought_signature_validator',
+  )
+})
+
+test('strips extra_content and thought_signature from tool_calls for non-Gemini providers', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        model: 'deepseek-chat',
+        choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  // Non-Gemini provider
+  process.env.OPENAI_BASE_URL = 'https://api.deepseek.com/v1'
+  process.env.OPENAI_API_KEY = 'fake-deepseek-key'
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  // Replay a conversation that has Gemini-specific fields from a prior session
+  await client.beta.messages.create({
+    model: 'deepseek-chat',
+    system: 'test system',
+    messages: [
+      { role: 'user', content: 'Use Bash' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_from_gemini',
+            name: 'Bash',
+            input: { command: 'pwd' },
+            // These Gemini-specific fields came from a previous Gemini session
+            extra_content: {
+              google: { thought_signature: 'old-gemini-sig' },
+            },
+            signature: 'old-top-level-sig',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_from_gemini', content: '/home' },
+        ],
+      },
+    ],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  const assistantWithToolCall = (requestBody?.messages as Array<Record<string, unknown>>).find(
+    message => Array.isArray(message.tool_calls),
+  ) as { tool_calls?: Array<Record<string, unknown>> } | undefined
+
+  const toolCall = assistantWithToolCall?.tool_calls?.[0]
+
+  // Core fields should be preserved
+  expect(toolCall).toHaveProperty('id', 'call_from_gemini')
+  expect(toolCall).toHaveProperty('type', 'function')
+  expect(toolCall).toHaveProperty('function.name', 'Bash')
+
+  // Gemini-specific fields must be stripped to avoid 400 on DeepSeek
+  expect(toolCall).not.toHaveProperty('extra_content')
+  expect(toolCall).not.toHaveProperty('thought_signature')
+
+  // DeepSeek is a standard OpenAI-compatible provider — store is included
+  expect(requestBody!).toHaveProperty('store', false)
 })

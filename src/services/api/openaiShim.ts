@@ -173,7 +173,8 @@ function convertSystemPrompt(
 
 function convertToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return JSON.stringify(content ?? '')
+  if (content == null) return ''
+  if (!Array.isArray(content)) return JSON.stringify(content)
 
   const chunks: string[] = []
   for (const block of content) {
@@ -259,6 +260,43 @@ function isGeminiMode(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI) ||
     hasGeminiApiHost(process.env.OPENAI_BASE_URL)
   )
+}
+
+function isMistralMode(): boolean {
+  const baseUrl = process.env.OPENAI_BASE_URL ?? ''
+  try {
+    return new URL(baseUrl).hostname.toLowerCase().includes('mistral')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Returns true if the current provider does NOT support the OpenAI-only
+ * `store` parameter.  Gemini and Mistral both reject it with 400.
+ */
+function providerSupportsStore(): boolean {
+  return !isGeminiMode() && !isMistralMode()
+}
+
+/**
+ * Strip Gemini-specific fields from tool_calls when sending to non-Gemini
+ * providers.  `extra_content` (including `google.thought_signature`) is not
+ * part of the OpenAI chat-completions spec and can cause 400 errors on
+ * providers like Groq, DeepSeek, Ollama, or Mistral when they encounter
+ * unknown fields in tool_calls.
+ */
+function stripProviderSpecificFields(messages: OpenAIMessage[]): OpenAIMessage[] {
+  if (isGeminiMode()) return messages // Gemini needs extra_content + thought_signature
+
+  return messages.map(msg => {
+    if (!msg.tool_calls?.length) return msg
+    const cleaned = msg.tool_calls.map(tc => {
+      const { extra_content: _, thought_signature: __, ...rest } = tc as Record<string, unknown>
+      return rest as typeof tc
+    })
+    return { ...msg, tool_calls: cleaned }
+  })
 }
 
 function convertMessages(
@@ -353,10 +391,20 @@ function convertMessages(
 
               // Handle Gemini thought_signature
               if (isGeminiMode()) {
-                // If the model provided a signature in the tool_use block itself (e.g. from a previous Turn/Step)
-                // Use thinkingBlock.signature for ALL tool calls in the same assistant turn if available.
-                // The API requires the same signature on every replayed function call part in a parallel set.
-                const signature = tu.signature ?? (thinkingBlock as any)?.signature
+                // Resolve the signature from multiple possible sources:
+                // 1. tu.signature — set by openaiStreamToAnthropic when streaming
+                // 2. thinkingBlock.signature — Anthropic-style signature on thinking blocks
+                // 3. tu.extra_content.google.thought_signature — Gemini's native storage
+                //    location when messages are replayed from a previous round-trip
+                const signature =
+                  tu.signature ??
+                  (thinkingBlock as any)?.signature ??
+                  (tu.extra_content?.google as Record<string, unknown>)?.thought_signature as string | undefined
+                // "skip_thought_signature_validator" is the Google-recommended sentinel for
+                // conversation history migrated from models that don't emit thought signatures.
+                // It's base64-encoded and accepted by Gemini 3 endpoints.
+                const resolvedSignature: string =
+                  signature ?? 'skip_thought_signature_validator'
 
                 // Merge into existing google-specific metadata if present
                 const existingGoogle = (toolCall.extra_content?.google as Record<string, unknown>) ?? {}
@@ -365,9 +413,16 @@ function convertMessages(
                   ...toolCall.extra_content,
                   google: {
                     ...existingGoogle,
-                    thought_signature: signature ?? "skip_thought_signature_validator"
-                  }
+                    thought_signature: resolvedSignature,
+                  },
                 }
+
+                // Gemini's OpenAI-compatible endpoint also reads thought_signature
+                // as a top-level field on tool_calls (alongside id/type/function).
+                // Without this, the endpoint may not forward the signature to the
+                // native Gemini functionCall format, causing:
+                //   "Function call is missing a thought_signature in functionCall parts"
+                ;(toolCall as Record<string, unknown>).thought_signature = resolvedSignature
               }
 
               return toolCall
@@ -624,7 +679,7 @@ async function* openaiStreamToAnthropic(
   let hasClosedThinking = false
   let activeTextBuffer = ''
   let textBufferMode: 'none' | 'pending' | 'strip' = 'none'
-  let lastStopReason: 'tool_use' | 'max_tokens' | 'end_turn' | null = null
+  let lastStopReason: 'tool_use' | 'max_tokens' | 'end_turn' | 'content_filter' | null = null
   let hasEmittedFinalUsage = false
   let hasProcessedFinishReason = false
 
@@ -1174,20 +1229,22 @@ class OpenAIShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
-    const openaiMessages = convertMessages(
+    const openaiMessages = stripProviderSpecificFields(convertMessages(
       params.messages as Array<{
         role: string
         message?: { role?: string; content?: unknown }
         content?: unknown
       }>,
       params.system,
-    )
+    ))
 
     const body: Record<string, unknown> = {
       model: request.resolvedModel,
       messages: openaiMessages,
       stream: params.stream ?? false,
-      store: false,
+      // `store` is an OpenAI-only parameter — Gemini and Mistral reject it
+      // with "Unknown name 'store': Cannot find field." (HTTP 400).
+      ...(providerSupportsStore() ? { store: false } : {}),
     }
     // Convert max_tokens to max_completion_tokens for OpenAI API compatibility.
     // Azure OpenAI requires max_completion_tokens and does not accept max_tokens.
@@ -1362,7 +1419,8 @@ class OpenAIShimMessages {
               }>,
             ),
             stream: params.stream ?? false,
-            store: false,
+            // `store` is OpenAI-only — omit for Gemini/Mistral
+            ...(providerSupportsStore() ? { store: false } : {}),
           }
 
           if (!Array.isArray(responsesBody.input) || responsesBody.input.length === 0) {
@@ -1380,8 +1438,11 @@ class OpenAIShimMessages {
             responsesBody.instructions = systemText
           }
 
-          if (body.max_tokens !== undefined) {
-            responsesBody.max_output_tokens = body.max_tokens
+          // max_completion_tokens is used for all providers (body.max_completion_tokens),
+          // but GitHub handling above moved it to body.max_tokens.  Check both.
+          const resolvedMaxTokens = body.max_completion_tokens ?? body.max_tokens
+          if (resolvedMaxTokens !== undefined) {
+            responsesBody.max_output_tokens = resolvedMaxTokens
           }
 
           if (params.tools && params.tools.length > 0) {
