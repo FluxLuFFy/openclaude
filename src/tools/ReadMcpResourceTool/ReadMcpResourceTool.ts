@@ -149,6 +149,13 @@ export const ReadMcpResourceTool = buildTool({
     return isOutputLineTruncated(jsonStringify(output))
   },
   mapToolResultToToolResultBlockParam(content, toolUseID) {
+    if (content === undefined || content === null) {
+      return {
+        tool_use_id: toolUseID,
+        type: 'tool_result',
+        content: 'No content returned from MCP resource.',
+      }
+    }
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
