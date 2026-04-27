@@ -1,4 +1,4 @@
-# OpenClaw Codebase Audit Report
+# OpenClaw Codebase Audit Report (openclaude bugs and issues)
 
 **Date:** 2026-04-27  
 **Scope:** `/root/.openclaw/workspace/openclaude/src/` (~2022 files, ~506K lines)  
