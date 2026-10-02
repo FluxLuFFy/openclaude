@@ -53,6 +53,7 @@ import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
 import { createMcpAuthTool } from '../../tools/McpAuthTool/McpAuthTool.js'
 import { ReadMcpResourceTool } from '../../tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { createAbortController } from '../../utils/abortController.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { AbortError, isAbortError } from '../../utils/errors.js'
 import { count } from '../../utils/array.js'
 import {
@@ -3093,7 +3094,7 @@ export async function callMCPToolWithUrlElicitationRetry({
     // Check abort signal before each attempt — without this, a cancelled
     // elicitation retry loop continues spinning until MAX retries
     if (signal.aborted) {
-      throw new Error('Tool call aborted during URL elicitation')
+      throw new AbortError('Tool call aborted during URL elicitation')
     }
     try {
       return await callToolFn({
@@ -3312,27 +3313,33 @@ async function callMCPTool({
       tool,
     )
 
-    // Use Promise.race with our own timeout to handle cases where SDK's
-    // internal timeout doesn't work (e.g., SSE stream breaks mid-request)
+    // Use our own timeout to handle cases where SDK's internal timeout
+    // doesn't work (e.g., SSE stream breaks mid-request). Abort the protocol
+    // request too; merely racing a timeout leaves the server call running in
+    // the background and can keep its transport occupied after we return.
     const timeoutMs = getMcpToolTimeoutMs()
+    const timeoutController = createAbortController()
+    const {
+      signal: requestSignal,
+      cleanup: cleanupRequestSignal,
+    } = createCombinedAbortSignal(signal, {
+      signalB: timeoutController.signal,
+      trace: { subsystem: 'mcp_tool_call', controllerRole: 'mcp_tool_call' },
+    })
     let timeoutId: NodeJS.Timeout | undefined
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        (reject, name, tool, timeoutMs) => {
-          reject(
-            new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
-              'MCP tool timeout',
-            ),
-          )
-        },
-        timeoutMs,
-        reject,
-        name,
-        tool,
-        timeoutMs,
-      )
+      timeoutId = setTimeout(() => {
+        timeoutController.abort(
+          new DOMException('The operation timed out.', 'TimeoutError'),
+        )
+        reject(
+          new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+            `MCP server "${name}" tool "${tool}" timed out after ${Math.floor(timeoutMs / 1000)}s`,
+            'MCP tool timeout',
+          ),
+        )
+      }, timeoutMs)
     })
 
     const result = await Promise.race([
@@ -3344,7 +3351,7 @@ async function callMCPTool({
         },
         CallToolResultSchema,
         {
-          signal,
+          signal: requestSignal,
           timeout: timeoutMs,
           onprogress: onProgress
             ? sdkProgress => {
@@ -3366,6 +3373,7 @@ async function callMCPTool({
       if (timeoutId) {
         clearTimeout(timeoutId)
       }
+      cleanupRequestSignal()
     })
 
     if ('isError' in result && result.isError) {

@@ -335,6 +335,24 @@ describe('getAutoCompactThreshold', () => {
     expect(getAutoCompactThreshold('claude-sonnet-4')).toBe(20_000)
   })
 
+  test('session context-window override immediately updates auto-compact threshold', async () => {
+    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '100000'
+    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '20000'
+    delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+    const { getAutoCompactThreshold, getEffectiveContextWindowSize } =
+      await importAutoCompact()
+
+    expect(getAutoCompactThreshold('claude-sonnet-4')).toBe(50_000)
+    realContext.setSessionContextWindowOverride('claude-sonnet-4', 1_000_000)
+
+    try {
+      expect(getEffectiveContextWindowSize('claude-sonnet-4')).toBe(980_000)
+      expect(getAutoCompactThreshold('claude-sonnet-4')).toBe(950_000)
+    } finally {
+      realContext.clearSessionContextWindowOverride('claude-sonnet-4')
+    }
+  })
+
   test('keeps compaction and warning thresholds usable across mid-sized windows', async () => {
     process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '64000'
     const { calculateTokenWarningState, getAutoCompactThreshold } =
