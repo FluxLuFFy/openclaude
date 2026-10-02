@@ -478,23 +478,72 @@ const MCP_REQUEST_TIMEOUT_MS = 60000
 const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream'
 
 /**
- * Wraps a fetch function to apply a fresh timeout signal to each request.
- * This avoids the bug where a single AbortSignal.timeout() created at connection
- * time becomes stale after 60 seconds, causing all subsequent requests to fail
- * immediately with "The operation timed out." Uses a 60-second timeout.
+ * Keep fetch timeout and cancellation resources alive until a streaming
+ * response is consumed or cancelled, not merely until response headers arrive.
+ */
+function wrapResponseBodyWithCleanup(
+  response: Response,
+  cleanup: () => void,
+  signal?: AbortSignal,
+): Response {
+  if (!response.body) {
+    cleanup()
+    return response
+  }
+
+  const reader = response.body.getReader()
+  let isCleanedUp = false
+  const finish = () => {
+    if (isCleanedUp) return
+    isCleanedUp = true
+    signal?.removeEventListener('abort', cancelReader)
+    cleanup()
+  }
+  const cancelReader = () => {
+    void reader.cancel(signal?.reason).catch(() => {})
+    finish()
+  }
+  signal?.addEventListener('abort', cancelReader, { once: true })
+  if (signal?.aborted) {
+    cancelReader()
+  }
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          controller.close()
+          finish()
+        } else {
+          controller.enqueue(value)
+        }
+      } catch (error) {
+        controller.error(error)
+        finish()
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason)
+      } finally {
+        finish()
+      }
+    },
+  })
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
+/**
+ * Wrap a fetch function with a fresh request timeout and an MCP-compatible
+ * Accept header. The request timeout and parent abort listener stay active
+ * until a streaming response is consumed or cancelled.
  *
- * Also ensures the Accept header required by the MCP Streamable HTTP spec is
- * present on POSTs. The MCP SDK sets this inside StreamableHTTPClientTransport.send(),
- * but it is attached to a Headers instance that passes through an object spread here,
- * and some runtimes/agents have been observed dropping it before it reaches the wire.
- * See https://github.com/anthropics/claude-agent-sdk-typescript/issues/202.
- * Normalizing here (the last wrapper before fetch()) guarantees it is sent.
- *
- * GET requests are excluded from the timeout since, for MCP transports, they are
- * long-lived SSE streams meant to stay open indefinitely. (Auth-related GETs use
- * a separate fetch wrapper with its own timeout in auth.ts.)
- *
- * @param baseFetch - The fetch function to wrap
+ * GET requests are excluded because MCP GET streams may stay open indefinitely.
  */
 export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
   return async (url: string | URL, init?: RequestInit) => {
@@ -547,12 +596,102 @@ export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
         headers,
         signal: controller.signal,
       })
-      cleanup()
-      return response
+      clearTimeout(timer)
+      return wrapResponseBodyWithCleanup(response, cleanup, controller.signal)
     } catch (error) {
       cleanup()
       throw error
     }
+  }
+}
+
+type McpRequestId = string | number
+
+/**
+ * Associate Streamable HTTP POST response bodies with MCP request IDs so
+ * notifications/cancelled can interrupt a response stream after headers arrive.
+ */
+export function wrapFetchWithRequestCancellation(
+  baseFetch: FetchLike,
+  activeRequests: Map<McpRequestId, AbortController>,
+): FetchLike {
+  return async (url, init) => {
+    let requestId: McpRequestId | undefined
+    if (
+      (init?.method ?? 'GET').toUpperCase() === 'POST' &&
+      typeof init?.body === 'string'
+    ) {
+      try {
+        const request: unknown = JSON.parse(init.body)
+        if (
+          request !== null &&
+          typeof request === 'object' &&
+          'id' in request &&
+          (typeof request.id === 'string' || typeof request.id === 'number')
+        ) {
+          requestId = request.id
+        }
+      } catch {
+        // Leave malformed/non-JSON requests to the underlying fetch unchanged.
+      }
+    }
+    if (requestId === undefined) {
+      return baseFetch(url, init)
+    }
+
+    const requestController = createAbortController()
+    activeRequests.set(requestId, requestController)
+    const { signal, cleanup } = createCombinedAbortSignal(
+      init?.signal ?? undefined,
+      {
+        signalB: requestController.signal,
+        trace: {
+          subsystem: 'mcp_http_request',
+          controllerRole: 'mcp_http_request',
+        },
+      },
+    )
+    const finish = () => {
+      cleanup()
+      if (activeRequests.get(requestId!) === requestController) {
+        activeRequests.delete(requestId!)
+      }
+    }
+    try {
+      const response = await baseFetch(url, { ...init, signal })
+      return wrapResponseBodyWithCleanup(response, finish, signal)
+    } catch (error) {
+      finish()
+      throw error
+    }
+  }
+}
+
+/**
+ * Abort the matching HTTP request body when the MCP SDK emits cancellation.
+ */
+export function attachMcpRequestCancellationHandler(
+  transport: Transport,
+  activeRequests: Map<McpRequestId, AbortController>,
+): void {
+  const send = transport.send.bind(transport)
+  transport.send = async (message, options) => {
+    if (
+      'method' in message &&
+      message.method === 'notifications/cancelled' &&
+      'params' in message &&
+      message.params !== undefined &&
+      typeof message.params === 'object' &&
+      'requestId' in message.params
+    ) {
+      const requestId = message.params.requestId
+      if (typeof requestId === 'string' || typeof requestId === 'number') {
+        activeRequests.get(requestId)?.abort(
+          new DOMException('MCP request cancelled.', 'AbortError'),
+        )
+      }
+    }
+    return send(message, options)
   }
 }
 
@@ -910,17 +1049,21 @@ export const connectToServer = memoize(
           `Proxy options: ${proxyOptions.dispatcher ? 'custom dispatcher' : 'default'}`,
         )
 
+        const activeHttpRequests = new Map<McpRequestId, AbortController>()
         const transportOptions: StreamableHTTPClientTransportOptions = {
           authProvider,
           // Use fresh timeout per request to avoid stale AbortSignal bug.
           // Step-up detection wraps innermost so the 403 is seen before the
           // SDK's handler calls auth() → tokens().
-          fetch: wrapFetchWithTimeout(
-            wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider, {
-              allowUnauthorizedRefresh,
-              resourceUrl: serverRef.url,
-              providerOwnsAuthorization: allowUnauthorizedRefresh,
-            }),
+          fetch: wrapFetchWithRequestCancellation(
+            wrapFetchWithTimeout(
+              wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider, {
+                allowUnauthorizedRefresh,
+                resourceUrl: serverRef.url,
+                providerOwnsAuthorization: allowUnauthorizedRefresh,
+              }),
+            ),
+            activeHttpRequests,
           ),
           requestInit: {
             ...proxyOptions,
@@ -959,6 +1102,7 @@ export const connectToServer = memoize(
           new URL(serverRef.url),
           transportOptions,
         )
+        attachMcpRequestCancellationHandler(transport, activeHttpRequests)
         logMCPDebug(name, `HTTP transport created successfully`)
       } else if (serverRef.type === 'sdk') {
         throw new Error('SDK servers should be handled in print.ts')
@@ -982,9 +1126,13 @@ export const connectToServer = memoize(
         const fetchWithAuth = createClaudeAiProxyFetch(globalThis.fetch)
 
         const proxyOptions = getProxyFetchOptions()
+        const activeProxyRequests = new Map<McpRequestId, AbortController>()
         const transportOptions: StreamableHTTPClientTransportOptions = {
           // Wrap fetchWithAuth with fresh timeout per request
-          fetch: wrapFetchWithTimeout(fetchWithAuth),
+          fetch: wrapFetchWithRequestCancellation(
+            wrapFetchWithTimeout(fetchWithAuth),
+            activeProxyRequests,
+          ),
           requestInit: {
             ...proxyOptions,
             headers: {
@@ -998,6 +1146,7 @@ export const connectToServer = memoize(
           new URL(proxyUrl),
           transportOptions,
         )
+        attachMcpRequestCancellationHandler(transport, activeProxyRequests)
         logMCPDebug(name, `claude.ai proxy transport created successfully`)
       } else if (
         (serverRef.type === 'stdio' || !serverRef.type) &&

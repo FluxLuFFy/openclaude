@@ -18,6 +18,8 @@ let hasSharedMutationLock = false
 const savedEnv = {
   CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
   CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+  CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:
+    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,
 }
 
 beforeEach(async () => {
@@ -25,6 +27,7 @@ beforeEach(async () => {
   hasSharedMutationLock = true
   process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '100000'
   process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '20000'
+  delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
   clearSessionContextWindowOverride('claude-sonnet-4')
 })
 
