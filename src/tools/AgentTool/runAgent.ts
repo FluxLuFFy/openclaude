@@ -902,12 +902,15 @@ export async function* runAgent({
     }
     const needleConfig = getGlobalConfig()
     const latestUserMessage = initialMessages.findLast(selectableUserMessagesFilter)
-    const needlePrompt = latestUserMessage
-      ? getContentText(latestUserMessage.message.content) ?? ''
-      : ''
+    const latestUserContent = latestUserMessage?.message.content
+    const needlePrompt = latestUserContent ? getContentText(latestUserContent) ?? '' : ''
+    const hasImageContent =
+      Array.isArray(latestUserContent) && latestUserContent.some(block => block.type === 'image')
     const queryIterator =
       useNeedlePlanner &&
       needleConfig.needleEnabled === true &&
+      needlePrompt.length > 0 &&
+      !hasImageContent &&
       (needleConfig.needleMode ?? 'worker') === 'worker'
         ? runNeedleWorkerTurn({
             prompt: needlePrompt,

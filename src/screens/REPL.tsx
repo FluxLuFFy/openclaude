@@ -3326,11 +3326,15 @@ export function REPL({
       },
     };
     const currentUserMessage = newMessages.findLast(selectableUserMessagesFilter);
-    const needlePrompt = currentUserMessage
-      ? getContentText(currentUserMessage.message.content) ?? ''
-      : '';
+    const currentUserContent = currentUserMessage?.message.content;
+    const needlePrompt = currentUserContent ? getContentText(currentUserContent) ?? '' : '';
+    const hasImageContent =
+      Array.isArray(currentUserContent) && currentUserContent.some(block => block.type === 'image');
     const queryGenerator =
-      needleConfig.needleEnabled === true && needleConfig.needleMode === 'main' && needlePrompt
+      needleConfig.needleEnabled === true &&
+      needleConfig.needleMode === 'main' &&
+      needlePrompt &&
+      !hasImageContent
         ? runNeedleWorkerTurn({
             prompt: needlePrompt,
             queryParams,
