@@ -148,6 +148,7 @@ import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
 import { queryCheckpoint, logQueryProfileReport, clearQueryProfile } from '../utils/queryProfiler.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query, type QueryTurnBudget } from '../query.js';
+import { runNeedleWorkerTurn } from '../services/needle/runNeedleWorkerTurn.js';
 import type { Terminal as QueryTerminal } from '../query/transitions.js';
 import type { AutoCompactTrackingState } from '../services/compact/autoCompact.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
@@ -3292,7 +3293,8 @@ export function REPL({
     resetTurnToolDuration();
     resetTurnClassifierDuration();
     let expectedAutoCompactTracking = queryAutoCompactTracking;
-    const queryGenerator = query({
+    const needleConfig = getGlobalConfig();
+    const queryParams = {
       messages: messagesIncludingNewMessages,
       requestOnlyMessages,
       onModelRequestStart: interruptionCorrectionQueryId
@@ -3301,8 +3303,8 @@ export function REPL({
               shouldQuery,
               isInterruptionCorrectionEligible: true,
               queryId: interruptionCorrectionQueryId,
-            })
-            onModelRequestStart?.()
+            });
+            onModelRequestStart?.();
           }
         : undefined,
       systemPrompt,
@@ -3318,13 +3320,25 @@ export function REPL({
         if (setAutoCompactTrackingForSessionIfUnchanged(querySessionId, expectedAutoCompactTracking, tracking)) {
           expectedAutoCompactTracking = tracking;
         }
-      }
-    });
+      },
+    };
+    const queryGenerator =
+      needleConfig.needleEnabled === true && needleConfig.needleMode === 'main'
+        ? runNeedleWorkerTurn({
+            prompt: JSON.stringify(messagesIncludingNewMessages),
+            queryParams,
+            tools: freshTools,
+            toolUseContext,
+            canUseTool,
+            signal: abortController.signal,
+          })
+        : query(queryParams);
     const queryTerminal = await driveQueryEvents(
       queryGenerator,
       reason => queryGuard.registerActivity(reason, queryGeneration),
       onQueryEvent,
     );
+
     if (isBuddyEnabled()) {
       void fireCompanionObserver(messagesRef.current, reaction => setAppState(prev => prev.companionReaction === reaction ? prev : {
         ...prev,

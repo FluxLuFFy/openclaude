@@ -18,6 +18,7 @@ import type { Terminal } from '../../query/transitions.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
+import { getGlobalConfig } from '../../utils/config.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
 import {
   connectToServer,
@@ -81,6 +82,8 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { runNeedleWorkerTurn } from '../../services/needle/runNeedleWorkerTurn.js'
+import { NEEDLE_WORKER_MODEL } from '../../services/needle/needleClient.js'
 import {
   canDescendantShowPermissionPrompts,
   shouldAvoidAgentPermissionPrompts,
@@ -390,7 +393,7 @@ export async function* runAgent({
   // Resolve per-agent provider routing from settings
   const settings = getInitialSettings()
 
-  const { mainLoopModel: effectiveModel, providerOverride } =
+  const { mainLoopModel: routedModel, providerOverride } =
     resolveAgentRunModelRouting({
       resolvedAgentModel,
       parentModel: toolUseContext.options.mainLoopModel,
@@ -401,6 +404,12 @@ export async function* runAgent({
       settings,
       permissionMode,
     })
+  const useNeedlePlanner = routedModel === NEEDLE_WORKER_MODEL
+  const effectiveModel = useNeedlePlanner
+    ? resolvedAgentModel === NEEDLE_WORKER_MODEL
+      ? toolUseContext.options.mainLoopModel
+      : resolvedAgentModel
+    : routedModel
 
   if (
     shouldEnforceModelAllowlist(
@@ -873,7 +882,7 @@ export async function* runAgent({
             agentDefinition.maxSteps! > 0
           ? agentDefinition.maxSteps
           : undefined
-    const queryIterator = query({
+    const queryParams = {
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
@@ -889,7 +898,21 @@ export async function* runAgent({
               agentType: agentDefinition.agentType,
             }
           : undefined,
-    })[Symbol.asyncIterator]()
+    }
+    const needleConfig = getGlobalConfig()
+    const queryIterator =
+      effectiveModel === NEEDLE_WORKER_MODEL &&
+      needleConfig.needleEnabled === true &&
+      (needleConfig.needleMode ?? 'worker') === 'worker'
+        ? runNeedleWorkerTurn({
+            prompt: JSON.stringify(initialMessages),
+            queryParams,
+            tools: allTools,
+            toolUseContext: agentToolUseContext,
+            canUseTool,
+            signal: override?.abortController?.signal,
+          })
+        : query(queryParams)[Symbol.asyncIterator]()
 
     try {
       while (true) {
