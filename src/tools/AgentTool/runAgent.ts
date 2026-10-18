@@ -59,7 +59,8 @@ import {
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
-import { createUserMessage } from '../../utils/messages.js'
+import { createUserMessage, getContentText } from '../../utils/messages.js'
+import { selectableUserMessagesFilter } from '../../utils/messageFilters.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import { resolveAgentRunModelRouting, shouldEnforceModelAllowlist } from '../../services/api/agentRouting.js'
@@ -82,7 +83,7 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
-import { runNeedleWorkerTurn } from '../../services/needle/runNeedleWorkerTurn.js'
+import { closeNeedleClient, runNeedleWorkerTurn } from '../../services/needle/runNeedleWorkerTurn.js'
 import { NEEDLE_WORKER_MODEL } from '../../services/needle/needleClient.js'
 import {
   canDescendantShowPermissionPrompts,
@@ -900,17 +901,21 @@ export async function* runAgent({
           : undefined,
     }
     const needleConfig = getGlobalConfig()
+    const latestUserMessage = initialMessages.findLast(selectableUserMessagesFilter)
+    const needlePrompt = latestUserMessage
+      ? getContentText(latestUserMessage.message.content) ?? ''
+      : ''
     const queryIterator =
-      effectiveModel === NEEDLE_WORKER_MODEL &&
+      useNeedlePlanner &&
       needleConfig.needleEnabled === true &&
       (needleConfig.needleMode ?? 'worker') === 'worker'
         ? runNeedleWorkerTurn({
-            prompt: JSON.stringify(initialMessages),
+            prompt: needlePrompt,
             queryParams,
             tools: allTools,
             toolUseContext: agentToolUseContext,
             canUseTool,
-            signal: override?.abortController?.signal,
+            signal: agentAbortController.signal,
           })
         : query(queryParams)[Symbol.asyncIterator]()
 
@@ -987,6 +992,7 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
+    closeNeedleClient(agentToolUseContext)
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks

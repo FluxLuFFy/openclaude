@@ -1,9 +1,9 @@
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { call as needleCall } from './needle.js'
-import { getGlobalConfig } from '../../utils/config.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { setClaudeConfigHomeDirForTesting } from '../../utils/envUtils.js'
 import type { LocalJSXCommandContext } from '../../types/command.js'
 import {
@@ -20,6 +20,7 @@ describe('needle command', () => {
     setClaudeConfigHomeDirForTesting(configDir)
   })
   afterEach(() => {
+    saveGlobalConfig(current => ({ ...current, needleEnabled: false, needleMode: 'worker' }))
     setClaudeConfigHomeDirForTesting(undefined)
     delete process.env.CLAUDE_CONFIG_DIR
     rmSync(configDir, { recursive: true, force: true })
@@ -41,17 +42,27 @@ describe('needle command', () => {
     }
   })
 
-  it('toggles the worker and persists its mode', async () => {
+  it.skipIf(process.platform === 'win32')('toggles the worker and persists its mode', async () => {
+    const pythonStub = join(configDir, 'python-stub')
+    writeFileSync(pythonStub, '#!/bin/sh\nexit 0\n')
+    chmodSync(pythonStub, 0o755)
+    const previous = process.env.OPENCLAUDE_NEEDLE_PYTHON
+    process.env.OPENCLAUDE_NEEDLE_PYTHON = pythonStub
     const context = {} as unknown as LocalJSXCommandContext
-    await needleCall('enable', context)
-    expect(getGlobalConfig().needleEnabled).toBe(true)
-    expect(getGlobalConfig().needleMode).toBe('worker')
+    try {
+      await needleCall('enable', context)
+      expect(getGlobalConfig().needleEnabled).toBe(true)
+      expect(getGlobalConfig().needleMode).toBe('worker')
 
-    await needleCall('mode main', context)
-    expect(getGlobalConfig().needleMode).toBe('main')
+      await needleCall('mode main', context)
+      expect(getGlobalConfig().needleMode).toBe('main')
 
-    const status = await needleCall('status', context)
-    expect(status.type).toBe('text')
-    if (status.type === 'text') expect(status.value).toContain('main')
+      const status = await needleCall('status', context)
+      expect(status.type).toBe('text')
+      if (status.type === 'text') expect(status.value).toContain('main')
+    } finally {
+      if (previous === undefined) delete process.env.OPENCLAUDE_NEEDLE_PYTHON
+      else process.env.OPENCLAUDE_NEEDLE_PYTHON = previous
+    }
   })
 })

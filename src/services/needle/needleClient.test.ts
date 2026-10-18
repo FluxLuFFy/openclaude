@@ -36,7 +36,7 @@ describe('Needle client configuration', () => {
     ])
   })
 
-  test('restarts the worker after a child exit before serving later requests', async () => {
+  test.skipIf(process.platform === 'win32')('restarts the worker after a child exit before serving later requests', async () => {
     const previous = process.env.OPENCLAUDE_NEEDLE_PYTHON
     process.env.OPENCLAUDE_NEEDLE_PYTHON = '/bin/false'
     const client = new (await import('./needleClient.js')).NeedleClient(100)
@@ -50,7 +50,7 @@ describe('Needle client configuration', () => {
     }
   })
 
-  test('restarts the worker after a zero child exit before serving later requests', async () => {
+  test.skipIf(process.platform === 'win32')('restarts the worker after a zero child exit before serving later requests', async () => {
     const previous = process.env.OPENCLAUDE_NEEDLE_PYTHON
     process.env.OPENCLAUDE_NEEDLE_PYTHON = '/bin/true'
     const client = new (await import('./needleClient.js')).NeedleClient(100)
@@ -64,7 +64,7 @@ describe('Needle client configuration', () => {
     }
   })
 
-  test('restarts the worker after a timeout before serving later requests', async () => {
+  test.skipIf(process.platform === 'win32')('restarts the worker after a timeout before serving later requests', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'needle-runtime-'))
     const runtime = join(directory, 'runtime.py')
     const command = join(directory, 'python')

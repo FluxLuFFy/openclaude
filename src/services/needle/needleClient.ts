@@ -12,6 +12,7 @@ def main():
     agent = None
     agent_tools = None
     for line in sys.stdin:
+        request = None
         try:
             request = json.loads(line)
             if agent is None or agent_tools != request["tools"]:
@@ -197,7 +198,7 @@ export class NeedleClient {
       this.pending.set(id, pending)
       this.process!.stdin.write(`${JSON.stringify(payload)}\n`, error => {
         if (!error) return
-        this.rejectAll(new Error(`Unable to write to Needle worker: ${error.message}`))
+        this.restart(new Error(`Unable to write to Needle worker: ${error.message}`))
       })
     })
   }
@@ -234,6 +235,7 @@ export class NeedleClient {
     this.process = child
     this.toolsKey = key
     this.lines = createInterface({ input: child.stdout })
+    child.stderr.resume()
     this.lines.on('line', line => {
       try {
         const response = JSON.parse(line) as RuntimeResponse
@@ -252,6 +254,7 @@ export class NeedleClient {
       if (this.process === child) this.restart(error)
     }
     child.once('error', fail)
+    child.stdin.on('error', fail)
     child.once('exit', code => {
       if (this.process === child) {
         fail(new Error(`Needle worker exited with code ${code ?? 'unknown'}`))

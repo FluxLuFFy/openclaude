@@ -3322,10 +3322,14 @@ export function REPL({
         }
       },
     };
+    const latestUserMessage = messagesIncludingNewMessages.findLast(selectableUserMessagesFilter);
+    const needlePrompt = latestUserMessage
+      ? getContentText(latestUserMessage.message.content) ?? ''
+      : '';
     const queryGenerator =
       needleConfig.needleEnabled === true && needleConfig.needleMode === 'main'
         ? runNeedleWorkerTurn({
-            prompt: JSON.stringify(messagesIncludingNewMessages),
+            prompt: needlePrompt,
             queryParams,
             tools: freshTools,
             toolUseContext,
