@@ -3325,9 +3325,9 @@ export function REPL({
         }
       },
     };
-    const latestUserMessage = messagesIncludingNewMessages.findLast(selectableUserMessagesFilter);
-    const needlePrompt = latestUserMessage
-      ? getContentText(latestUserMessage.message.content) ?? ''
+    const currentUserMessage = newMessages.findLast(selectableUserMessagesFilter);
+    const needlePrompt = currentUserMessage
+      ? getContentText(currentUserMessage.message.content) ?? ''
       : '';
     const queryGenerator =
       needleConfig.needleEnabled === true && needleConfig.needleMode === 'main' && needlePrompt
