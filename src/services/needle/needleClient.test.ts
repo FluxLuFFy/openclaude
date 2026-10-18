@@ -75,7 +75,7 @@ describe('Needle client configuration', () => {
     process.env.OPENCLAUDE_NEEDLE_PYTHON = command
     const client = new (await import('./needleClient.js')).NeedleClient(1_000)
     try {
-      await expect(client.complete({ prompt: 'malformed', tools: [] })).rejects.toThrow()
+      await expect(client.complete({ prompt: 'malformed', tools: [] })).rejects.toThrow('Needle worker returned no result')
     } finally {
       client.close()
       if (previous === undefined) delete process.env.OPENCLAUDE_NEEDLE_PYTHON

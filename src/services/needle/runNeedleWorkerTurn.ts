@@ -63,17 +63,17 @@ export async function* runNeedleWorkerTurn({
   try {
     let context = toolUseContext
     const executableTools = tools.filter(tool => tool.isEnabled())
-    const needleTools = await Promise.all(executableTools.map(async tool => ({
-      name: tool.name,
-      description: await tool.description({}, {
-        isNonInteractiveSession: context.options.isNonInteractiveSession ?? false,
-        toolPermissionContext: context.getAppState().toolPermissionContext,
-        tools: executableTools,
-      }),
-      input_schema: tool.inputJSONSchema ?? zodToJsonSchema(tool.inputSchema),
-    })))
     let response
     try {
+      const needleTools = await Promise.all(executableTools.map(async tool => ({
+        name: tool.name,
+        description: await tool.description({}, {
+          isNonInteractiveSession: context.options.isNonInteractiveSession ?? false,
+          toolPermissionContext: context.getAppState().toolPermissionContext,
+          tools: executableTools,
+        }),
+        input_schema: tool.inputJSONSchema ?? zodToJsonSchema(tool.inputSchema),
+      })))
       response = await needleClient.complete({ prompt, tools: buildNeedleToolPayload(needleTools), signal })
     } catch {
       return yield* continueQuery({ ...queryParams, toolUseContext: context })
