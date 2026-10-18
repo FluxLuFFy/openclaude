@@ -1,8 +1,9 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { describe, expect, it, beforeEach, afterEach, spyOn } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { call as needleCall } from './needle.js'
+import * as needleClient from '../../services/needle/needleClient.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { setClaudeConfigHomeDirForTesting } from '../../utils/envUtils.js'
 import type { LocalJSXCommandContext } from '../../types/command.js'
@@ -42,12 +43,8 @@ describe('needle command', () => {
     }
   })
 
-  it.skipIf(process.platform === 'win32')('toggles the worker and persists its mode', async () => {
-    const pythonStub = join(configDir, 'python-stub')
-    writeFileSync(pythonStub, '#!/bin/sh\nexit 0\n')
-    chmodSync(pythonStub, 0o755)
-    const previous = process.env.OPENCLAUDE_NEEDLE_PYTHON
-    process.env.OPENCLAUDE_NEEDLE_PYTHON = pythonStub
+  it('toggles the worker and persists its mode', async () => {
+    const availability = spyOn(needleClient, 'checkNeedleAvailability').mockResolvedValue({ available: true })
     const context = {} as unknown as LocalJSXCommandContext
     try {
       await needleCall('enable', context)
@@ -61,8 +58,7 @@ describe('needle command', () => {
       expect(status.type).toBe('text')
       if (status.type === 'text') expect(status.value).toContain('main')
     } finally {
-      if (previous === undefined) delete process.env.OPENCLAUDE_NEEDLE_PYTHON
-      else process.env.OPENCLAUDE_NEEDLE_PYTHON = previous
+      availability.mockRestore()
     }
   })
 })

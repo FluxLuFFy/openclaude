@@ -148,7 +148,7 @@ import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
 import { queryCheckpoint, logQueryProfileReport, clearQueryProfile } from '../utils/queryProfiler.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query, type QueryTurnBudget } from '../query.js';
-import { runNeedleWorkerTurn } from '../services/needle/runNeedleWorkerTurn.js';
+import { closeNeedleClient, runNeedleWorkerTurn } from '../services/needle/runNeedleWorkerTurn.js';
 import type { Terminal as QueryTerminal } from '../query/transitions.js';
 import type { AutoCompactTrackingState } from '../services/compact/autoCompact.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
@@ -682,8 +682,11 @@ export function REPL({
   // without requiring a REPL remount. CLI prop still wins over env/config.
   const isRemoteSession = !!remoteSessionConfig;
   const foregroundTurnBudgetRef = useRef<ForegroundTurnBudgetHandoff | null>(null);
+  const needleClientOwnerRef = useRef({});
   const backgroundHandoffStartedRef = useRef(false);
   const [backgroundHandoffPreparing, setBackgroundHandoffPreparing] = useState(false);
+
+  useEffect(() => () => closeNeedleClient(needleClientOwnerRef.current), []);
 
   useEffect(() => {
     if (
@@ -3327,12 +3330,13 @@ export function REPL({
       ? getContentText(latestUserMessage.message.content) ?? ''
       : '';
     const queryGenerator =
-      needleConfig.needleEnabled === true && needleConfig.needleMode === 'main'
+      needleConfig.needleEnabled === true && needleConfig.needleMode === 'main' && needlePrompt
         ? runNeedleWorkerTurn({
             prompt: needlePrompt,
             queryParams,
             tools: freshTools,
             toolUseContext,
+            clientOwner: needleClientOwnerRef.current,
             canUseTool,
             signal: abortController.signal,
           })

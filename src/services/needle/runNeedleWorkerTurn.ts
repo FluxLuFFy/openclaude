@@ -12,14 +12,16 @@ import { buildNeedleToolPayload, NeedleClient } from './needleClient.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { query, type QueryParams } from '../../query.js'
 
-const needleClients = new WeakMap<ToolUseContext, NeedleClient>()
+type NeedleClientOwner = object
+
+const needleClients = new WeakMap<NeedleClientOwner, NeedleClient>()
 const activeNeedleClients = new Set<NeedleClient>()
 registerCleanup(() => {
   for (const client of activeNeedleClients) client.close()
   activeNeedleClients.clear()
 })
 
-function getNeedleClient(context: ToolUseContext): NeedleClient {
+function getNeedleClient(context: NeedleClientOwner): NeedleClient {
   const existing = needleClients.get(context)
   if (existing) return existing
   const client = new NeedleClient()
@@ -28,7 +30,7 @@ function getNeedleClient(context: ToolUseContext): NeedleClient {
   return client
 }
 
-export function closeNeedleClient(context: ToolUseContext): void {
+export function closeNeedleClient(context: NeedleClientOwner): void {
   const client = needleClients.get(context)
   if (!client) return
   client.close()
@@ -41,6 +43,7 @@ export async function* runNeedleWorkerTurn({
   queryParams,
   tools,
   toolUseContext,
+  clientOwner = toolUseContext,
   canUseTool,
   signal,
   client,
@@ -50,12 +53,13 @@ export async function* runNeedleWorkerTurn({
   queryParams: QueryParams
   tools: Tools
   toolUseContext: ToolUseContext
+  clientOwner?: NeedleClientOwner
   canUseTool: CanUseToolFn
   signal?: AbortSignal
   client?: Pick<NeedleClient, 'complete' | 'close'>
   continueQuery?: typeof query
 }): AsyncGenerator<StreamEvent | RequestStartEvent | Message | TombstoneMessage | ToolUseSummaryMessage, Terminal> {
-  const needleClient = client ?? getNeedleClient(toolUseContext)
+  const needleClient = client ?? getNeedleClient(clientOwner)
   try {
     let context = toolUseContext
     const executableTools = tools.filter(tool => tool.isEnabled())
