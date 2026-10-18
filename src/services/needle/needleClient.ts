@@ -89,7 +89,6 @@ export async function checkNeedleAvailability(): Promise<{
     const child = spawn(command, [...args, '-c', 'import needle'], {
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, NEEDLE_TELEMETRY: '0' },
     })
     let stderr = ''
     const timer = setTimeout(() => {
@@ -230,7 +229,6 @@ export class NeedleClient {
     const child = spawn(command, [...args, '-u', '-c', NEEDLE_RUNTIME], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, NEEDLE_TELEMETRY: '0' },
     })
     this.process = child
     this.toolsKey = key
@@ -241,11 +239,18 @@ export class NeedleClient {
         const response = JSON.parse(line) as RuntimeResponse
         const pending = response.id ? this.pending.get(response.id) : undefined
         if (!pending) return
-        this.pending.delete(response.id)
-        clearTimeout(pending.timer)
-        pending.abortCleanup?.()
-        if (response.error) pending.reject(new Error(`Needle worker error: ${response.error}`))
-        else pending.resolve(normalizeResponse(response))
+        if (response.error) {
+          this.pending.delete(response.id)
+          clearTimeout(pending.timer)
+          pending.abortCleanup?.()
+          pending.reject(new Error(`Needle worker error: ${response.error}`))
+        } else {
+          const normalized = normalizeResponse(response)
+          this.pending.delete(response.id)
+          clearTimeout(pending.timer)
+          pending.abortCleanup?.()
+          pending.resolve(normalized)
+        }
       } catch (error) {
         this.rejectAll(error instanceof Error ? error : new Error(String(error)))
       }

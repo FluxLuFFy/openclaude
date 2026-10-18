@@ -95,11 +95,18 @@ export async function* runNeedleWorkerTurn({
     yield assistantMessage
 
     const resultMessages: Message[] = []
+    let shouldPreventContinuation = false
     try {
       for await (const update of runToolUse(toolUse, assistantMessage, canUseTool, context)) {
         if (update.contextModifier) context = update.contextModifier.modifyContext(context)
         yield update.message
         if (update.message.type === 'user') resultMessages.push(update.message)
+        if (
+          update.message.type === 'attachment' &&
+          update.message.attachment.type === 'hook_stopped_continuation'
+        ) {
+          shouldPreventContinuation = true
+        }
       }
     } finally {
       context.setInProgressToolUseIDs(prev => {
@@ -108,6 +115,8 @@ export async function* runNeedleWorkerTurn({
         return next
       })
     }
+
+    if (shouldPreventContinuation) return { reason: 'hook_stopped' }
 
     const normalizedResults = normalizeMessagesForAPI(resultMessages, executableTools)
       .filter(message => message.type === 'user')

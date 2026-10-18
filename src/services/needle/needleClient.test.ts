@@ -64,6 +64,26 @@ describe('Needle client configuration', () => {
     }
   })
 
+  test.skipIf(process.platform === 'win32')('rejects malformed matching responses instead of leaving requests pending', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'needle-runtime-'))
+    const runtime = join(directory, 'runtime.py')
+    const command = join(directory, 'python')
+    writeFileSync(runtime, `import json, sys\nfor line in sys.stdin:\n    request = json.loads(line)\n    print(json.dumps({"id": request["id"]}), flush=True)\n`)
+    writeFileSync(command, `#!/bin/sh\nexec python3 /${runtime.replace(/^\//, '')}\n`)
+    chmodSync(command, 0o755)
+    const previous = process.env.OPENCLAUDE_NEEDLE_PYTHON
+    process.env.OPENCLAUDE_NEEDLE_PYTHON = command
+    const client = new (await import('./needleClient.js')).NeedleClient(1_000)
+    try {
+      await expect(client.complete({ prompt: 'malformed', tools: [] })).rejects.toThrow()
+    } finally {
+      client.close()
+      if (previous === undefined) delete process.env.OPENCLAUDE_NEEDLE_PYTHON
+      else process.env.OPENCLAUDE_NEEDLE_PYTHON = previous
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   test.skipIf(process.platform === 'win32')('restarts the worker after a timeout before serving later requests', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'needle-runtime-'))
     const runtime = join(directory, 'runtime.py')
