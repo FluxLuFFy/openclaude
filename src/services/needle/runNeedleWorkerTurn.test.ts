@@ -123,7 +123,7 @@ describe('runNeedleWorkerTurn', () => {
         throw new Error('tool should not execute')
       },
     })
-    const { context } = makeContext([tool])
+    const { context, getInProgress } = makeContext([tool])
     const params = makeParams(context)
     const controller = new AbortController()
     let continued = false
@@ -147,6 +147,7 @@ describe('runNeedleWorkerTurn', () => {
     expect(result.done).toBe(true)
     expect(result.value).toEqual({ reason: 'aborted_streaming' })
     expect(continued).toBe(false)
+    expect(getInProgress().size).toBe(0)
   })
 
   test('yields a paired prelude and continues the provider with normalized results', async () => {

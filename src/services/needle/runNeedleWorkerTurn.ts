@@ -95,7 +95,14 @@ export async function* runNeedleWorkerTurn({
     const assistantMessage = createAssistantMessage({ content: [toolUse] }) as AssistantMessage
     context.setInProgressToolUseIDs(prev => new Set(prev).add(toolUse.id))
     yield assistantMessage
-    if (signal?.aborted) return { reason: 'aborted_streaming' }
+    if (signal?.aborted) {
+      context.setInProgressToolUseIDs(prev => {
+        const next = new Set(prev)
+        next.delete(toolUse.id)
+        return next
+      })
+      return { reason: 'aborted_streaming' }
+    }
 
     const resultMessages: Message[] = []
     let shouldPreventContinuation = false
