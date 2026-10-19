@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
-import { createAssistantMessage } from '../../utils/messages/factories.js'
+import { createAssistantMessage, createUserMessage } from '../../utils/messages/factories.js'
 import { normalizeMessagesForAPI } from '../../utils/messages.js'
 import { runToolUse } from '../tools/toolExecution.js'
 import type { AssistantMessage, Message, RequestStartEvent, StreamEvent, TombstoneMessage, ToolUseSummaryMessage } from '../../types/message.js'
@@ -100,6 +100,14 @@ export async function* runNeedleWorkerTurn({
         const next = new Set(prev)
         next.delete(toolUse.id)
         return next
+      })
+      yield createUserMessage({
+        content: [{
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: 'Cancelled before tool execution.',
+          is_error: true,
+        }],
       })
       return { reason: 'aborted_streaming' }
     }

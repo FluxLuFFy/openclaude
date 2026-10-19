@@ -141,11 +141,28 @@ describe('runNeedleWorkerTurn', () => {
       client: fakeClient({ functionCalls: [{ name: 'Read', arguments: { path: '/tmp/a' } }] }),
       continueQuery,
     })
-    expect((await generator.next()).value).toMatchObject({ type: 'assistant' })
+    const prelude = (await generator.next()).value
+    expect(prelude).toMatchObject({ type: 'assistant' })
     controller.abort()
     const result = await generator.next()
-    expect(result.done).toBe(true)
-    expect(result.value).toEqual({ reason: 'aborted_streaming' })
+    expect(result.done).toBe(false)
+    expect(result.value).toMatchObject({ type: 'user' })
+    const cancellation = result.value as Message
+    const cancellationContent = cancellation.type === 'user' ? cancellation.message.content : []
+    expect(cancellationContent).toContainEqual(expect.objectContaining({
+      type: 'tool_result',
+      content: 'Cancelled before tool execution.',
+      is_error: true,
+    }))
+    const cancellationResult = Array.isArray(cancellationContent)
+      ? cancellationContent.find(block => block.type === 'tool_result')
+      : undefined
+    const preludeContent = prelude && 'type' in prelude && prelude.type === 'assistant' ? prelude.message.content : []
+    const preludeToolUse = Array.isArray(preludeContent) ? preludeContent.find(block => block.type === 'tool_use') : undefined
+    expect(cancellationResult?.tool_use_id).toBe(preludeToolUse?.id)
+    const terminal = await generator.next()
+    expect(terminal.done).toBe(true)
+    expect(terminal.value).toEqual({ reason: 'aborted_streaming' })
     expect(continued).toBe(false)
     expect(getInProgress().size).toBe(0)
   })
