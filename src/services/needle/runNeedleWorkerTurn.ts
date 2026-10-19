@@ -76,8 +76,10 @@ export async function* runNeedleWorkerTurn({
       })))
       response = await needleClient.complete({ prompt, tools: buildNeedleToolPayload(needleTools), signal })
     } catch {
+      if (signal?.aborted) return { reason: 'aborted_streaming' }
       return yield* continueQuery({ ...queryParams, toolUseContext: context })
     }
+    if (signal?.aborted) return { reason: 'aborted_streaming' }
     if (response.functionCalls.length !== 1) {
       return yield* continueQuery({ ...queryParams, toolUseContext: context })
     }
@@ -93,6 +95,7 @@ export async function* runNeedleWorkerTurn({
     const assistantMessage = createAssistantMessage({ content: [toolUse] }) as AssistantMessage
     context.setInProgressToolUseIDs(prev => new Set(prev).add(toolUse.id))
     yield assistantMessage
+    if (signal?.aborted) return { reason: 'aborted_streaming' }
 
     const resultMessages: Message[] = []
     let shouldPreventContinuation = false
@@ -117,6 +120,7 @@ export async function* runNeedleWorkerTurn({
     }
 
     if (shouldPreventContinuation) return { reason: 'hook_stopped' }
+    if (signal?.aborted) return { reason: 'aborted_streaming' }
 
     const normalizedResults = normalizeMessagesForAPI(resultMessages, executableTools)
       .filter(message => message.type === 'user')

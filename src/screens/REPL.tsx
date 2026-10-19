@@ -686,8 +686,6 @@ export function REPL({
   const backgroundHandoffStartedRef = useRef(false);
   const [backgroundHandoffPreparing, setBackgroundHandoffPreparing] = useState(false);
 
-  useEffect(() => () => closeNeedleClient(needleClientOwnerRef.current), []);
-
   useEffect(() => {
     if (
       shouldShowReplMaxTurnsUnlimitedWarning(maxTurnsProp, {
@@ -1021,6 +1019,10 @@ export function REPL({
   // REPL bridge to abort the active query when a remote interrupt arrives.
   const abortControllerRef = useRef<AbortController | null>(null);
   abortControllerRef.current = abortController;
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+    closeNeedleClient(needleClientOwnerRef.current);
+  }, []);
 
   // Ref for the bridge result callback — set after useReplBridge initializes,
   // read in the onQuery finally block to notify mobile clients that a turn ended.

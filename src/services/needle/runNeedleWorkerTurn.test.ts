@@ -116,6 +116,39 @@ describe('runNeedleWorkerTurn', () => {
     expect(continued).toBe(true)
   })
 
+  test('does not execute or continue after aborting after the planner prelude', async () => {
+    const tool = createToolFixture(z.object({ path: z.string() }), {
+      name: 'Read',
+      async call() {
+        throw new Error('tool should not execute')
+      },
+    })
+    const { context } = makeContext([tool])
+    const params = makeParams(context)
+    const controller = new AbortController()
+    let continued = false
+    const continueQuery = async function* () {
+      continued = true
+      return { reason: 'completed' as const }
+    }
+    const generator = runNeedleWorkerTurn({
+      prompt: 'plan',
+      queryParams: params,
+      tools: [tool],
+      toolUseContext: context,
+      canUseTool: params.canUseTool,
+      signal: controller.signal,
+      client: fakeClient({ functionCalls: [{ name: 'Read', arguments: { path: '/tmp/a' } }] }),
+      continueQuery,
+    })
+    expect((await generator.next()).value).toMatchObject({ type: 'assistant' })
+    controller.abort()
+    const result = await generator.next()
+    expect(result.done).toBe(true)
+    expect(result.value).toEqual({ reason: 'aborted_streaming' })
+    expect(continued).toBe(false)
+  })
+
   test('yields a paired prelude and continues the provider with normalized results', async () => {
     const tool = createToolFixture(z.object({ path: z.string() }), {
       name: 'Read',
